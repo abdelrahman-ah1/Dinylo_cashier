@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, EDGE_WS_URL, setActiveUser } from './api';
+import { MOCK_BRANCHES, MOCK_MENU, MOCK_TABLES, MOCK_USERS, MOCK_ORDERS } from './mockData';
 
 let reconnectTimeout = null;
 
@@ -49,30 +50,39 @@ export const useStore = create((set, get) => ({
     try {
       const branches = await api.getBranches().catch(() => []);
       const preferredId = get().branchId || branches[0]?.id;
-      const shop = await api.getBranch(preferredId);
-      const branch_id = shop.branch_id;
+      const shop = await api.getBranch(preferredId).catch(() => null);
+      const branch_id = shop?.branch_id || preferredId || MOCK_BRANCHES[0].branch_id;
       const [menu, tables, orders, sync, users, inv] = await Promise.all([
-        api.getMenu(branch_id),
-        api.getTables(branch_id),
-        api.getOrders(branch_id, 'active'),
+        api.getMenu(branch_id).catch(() => []),
+        api.getTables(branch_id).catch(() => []),
+        api.getOrders(branch_id, 'active').catch(() => []),
         api.getSyncStatus().catch(() => null),
         api.getUsers(branch_id).catch(() => []),
         api.getInventory(branch_id).catch(() => []),
       ]);
       set({
         branchId: branch_id,
-        shopProfile: shop,
-        branches,
-        menu,
-        tables,
-        orders,
-        users,
+        shopProfile: shop || MOCK_BRANCHES[0],
+        branches: branches.length > 0 ? branches : MOCK_BRANCHES,
+        menu: menu.length > 0 ? menu : MOCK_MENU,
+        tables: tables.length > 0 ? tables : MOCK_TABLES,
+        orders: orders.length > 0 ? orders : MOCK_ORDERS,
+        users: users.length > 0 ? users : MOCK_USERS,
         inventory: inv,
         ...(sync ? { syncStatus: sync } : {}),
       });
       get().connectWs(branch_id, role);
     } catch (err) {
-      console.error('[Store] Init failed:', err);
+      console.warn('[Store] Init falling back to mock offline dataset:', err);
+      set({
+        branchId: MOCK_BRANCHES[0].branch_id,
+        shopProfile: MOCK_BRANCHES[0],
+        branches: MOCK_BRANCHES,
+        menu: MOCK_MENU,
+        tables: MOCK_TABLES,
+        orders: MOCK_ORDERS,
+        users: MOCK_USERS,
+      });
     }
   },
 
@@ -213,6 +223,12 @@ export const useStore = create((set, get) => ({
           set((s) => ({ hardwareJobs: [event.job, ...s.hardwareJobs].slice(0, 30) }));
         } else if (event.type === 'hardware.drawer_kicked') {
           set((s) => ({ drawerKickCount: s.drawerKickCount + 1, hardwareJobs: [event.event, ...s.hardwareJobs].slice(0, 30) }));
+        } else if (event.type === 'table.updated') {
+          if (event.table) {
+            set((state) => ({
+              tables: state.tables.map((t) => (t.id === event.table.id ? { ...t, ...event.table } : t)),
+            }));
+          }
         } else {
           if (event.type === 'order.created') {
             set({ lastNewOrderArrival: Date.now() });
@@ -278,10 +294,43 @@ export const useStore = create((set, get) => ({
       approval_code: extras.approval_code,
       idempotency_key: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     });
-    // Order is marked paid
-    const updatedOrders = get().orders.filter(o => o.id !== orderId);
-    set({ orders: updatedOrders });
+    
+    // Refresh active orders and tables
+    const branchId = get().branchId;
+    if (branchId) {
+      const [orders, tables] = await Promise.all([
+        api.getOrders(branchId, 'active'),
+        api.getTables(branchId),
+      ]);
+      set({ orders, tables });
+    }
     return payment;
+  },
+
+  async transferOrderTable(orderId, targetTableId) {
+    const res = await api.transferTableOrder(orderId, targetTableId);
+    const branchId = get().branchId;
+    if (branchId) {
+      const [orders, tables] = await Promise.all([
+        api.getOrders(branchId, 'active'),
+        api.getTables(branchId),
+      ]);
+      set({ orders, tables });
+    }
+    return res;
+  },
+
+  async splitOrderItems(orderId, itemsToSplit) {
+    const res = await api.splitOrder(orderId, itemsToSplit);
+    const branchId = get().branchId;
+    if (branchId) {
+      const [orders, tables] = await Promise.all([
+        api.getOrders(branchId, 'active'),
+        api.getTables(branchId),
+      ]);
+      set({ orders, tables });
+    }
+    return res;
   },
 
   async markOrderPaid(orderId) {
@@ -362,6 +411,30 @@ export const useStore = create((set, get) => ({
       set({ auditLogs: data.logs || [], auditLogLoading: false });
     } catch (err) {
       set({ auditLogError: err.message, auditLogs: [], auditLogLoading: false });
+    }
+  },
+
+  async fetchKdsMetrics() {
+    const branchId = get().branchId;
+    if (!branchId) return;
+    try {
+      const metrics = await api.getKdsMetrics(branchId);
+      set({ kdsMetrics: metrics });
+      return metrics;
+    } catch (err) {
+      console.warn('[Store] fetchKdsMetrics error:', err);
+    }
+  },
+
+  async fetchHeadOfficeDashboard() {
+    set({ headOfficeLoading: true });
+    try {
+      const data = await api.getHeadOfficeDashboard();
+      set({ headOfficeData: data, headOfficeLoading: false });
+      return data;
+    } catch (err) {
+      set({ headOfficeLoading: false });
+      throw err;
     }
   },
 }));
