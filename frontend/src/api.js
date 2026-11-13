@@ -1,8 +1,15 @@
-// Points at the local branch Edge Server (not the cloud backend). In
-// production each branch's terminals resolve this via mDNS auto-discovery
-// on the LAN instead of a hardcoded URL.
-export const EDGE_SERVER_URL = 'http://localhost:4000';
-export const EDGE_WS_URL = 'ws://localhost:4000/ws';
+// Points to cloud backend if set via VITE_BACKEND_URL, otherwise defaults to local Edge Server.
+export const EDGE_SERVER_URL =
+  import.meta.env.VITE_BACKEND_URL ||
+  (typeof window !== 'undefined' && window.location.hostname === 'localhost'
+    ? 'http://localhost:4000'
+    : 'https://dinylo-cashier.onrender.com');
+
+// Derive WebSocket URL from HTTP/HTTPS backend URL
+export const EDGE_WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  EDGE_SERVER_URL.replace(/^http/, 'ws') + '/ws';
+
 
 let currentUserSession = null;
 
@@ -63,6 +70,10 @@ export const api = {
     request(`/api/orders/${orderId}/items/${itemId}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   updateOrderStatus: (orderId, status) =>
     request(`/api/orders/${orderId}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  transferTableOrder: (orderId, targetTableId) =>
+    request(`/api/orders/${orderId}/transfer-table`, { method: 'POST', body: JSON.stringify({ targetTableId }) }),
+  splitOrder: (orderId, itemsToSplit) =>
+    request(`/api/orders/${orderId}/split`, { method: 'POST', body: JSON.stringify({ itemsToSplit }) }),
 
   // Payments & Idempotency (NFR-8, FR-5.2, FR-5.3)
   processPayment: (payload) => request('/api/payments', { method: 'POST', body: JSON.stringify(payload) }),
@@ -86,9 +97,13 @@ export const api = {
   // Audit Logs (RBAC Scoped)
   getAuditLogs: (scope = 'today') => request(`/api/audit-logs?scope=${scope}`),
 
-  // Cloud Sync
+  // Reports & KDS Metrics
+  getKdsMetrics: (branchId) => request(`/api/reports/kds-metrics${branchId ? `?branch_id=${branchId}` : ''}`),
+
+  // Cloud Sync & Head Office Aggregator
   getSyncStatus: () => request('/api/sync/status'),
   simulateWan: (online) => request('/api/sync/simulate-wan', { method: 'POST', body: JSON.stringify({ online }) }),
   triggerReplay: () => request('/api/sync/replay', { method: 'POST' }),
   getCloudRecords: () => request('/api/sync/cloud-records'),
+  getHeadOfficeDashboard: () => request('/api/cloud/head-office-dashboard'),
 };
